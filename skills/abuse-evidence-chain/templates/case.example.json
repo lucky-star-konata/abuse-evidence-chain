@@ -1,0 +1,18 @@
+{
+  "case_id": "CASE-2026-001",
+  "title": "仿冒投资平台",
+  "category": "investment-fraud",
+  "operator": "分析员",
+  "purpose": "向域名注册商与托管商提交滥用举报",
+  "notes": "通过群聊引流发现，页面仿冒某证券公司，诱导下载 App。",
+  "targets": [
+    {
+      "url": "https://example.com",
+      "label": "landing"
+    },
+    {
+      "url": "https://example.com/download",
+      "label": "app-download"
+    }
+  ]
+}
