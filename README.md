@@ -1,5 +1,7 @@
 # abuse-evidence-chain
 
+[![CI](https://github.com/lucky-star-konata/abuse-evidence-chain/actions/workflows/ci.yml/badge.svg)](https://github.com/lucky-star-konata/abuse-evidence-chain/actions/workflows/ci.yml)
+
 面向黑灰产治理的**证据链 + 处置链**工具：对可疑站点做最小化公开取证，生成带哈希的证据包，再输出发给注册商、托管商、平台和执法机关的举报材料。
 
 > 只做公开信息取证与合规举报。不做入侵、拖库、DDoS、社工。详见 [DISCLAIMER.md](DISCLAIMER.md)。
