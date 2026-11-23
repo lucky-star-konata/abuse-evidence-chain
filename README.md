@@ -38,15 +38,19 @@ case.json ──> evidence_collect.py ──> cases/<case_id>/
 # 1. 复制案件模板并填写
 cp skills/abuse-evidence-chain/templates/case.example.json case.json
 
-# 2. 采集（单个页面只发一次 GET，不爬取）
+# 2. 预览采集计划（不发请求）
+python skills/abuse-evidence-chain/scripts/evidence_collect.py \
+  --case case.json --confirm-legal --dry-run
+
+# 3. 采集（单个页面只发一次 GET，不爬取）
 python skills/abuse-evidence-chain/scripts/evidence_collect.py \
   --case case.json --confirm-legal
 
-# 3. 校验证据完整性
+# 4. 校验证据完整性
 python skills/abuse-evidence-chain/scripts/verify_chain.py \
   --case cases/CASE-2026-001
 
-# 4. 生成报告与举报草稿
+# 5. 生成报告与举报草稿
 python skills/abuse-evidence-chain/scripts/report_builder.py \
   --case cases/CASE-2026-001
 ```
@@ -69,6 +73,9 @@ python skills/abuse-evidence-chain/scripts/report_builder.py \
 - **可复用**：举报草稿只写事实与请求，不写情绪化指控
 - **可追溯**：案件元信息、采集器版本、时间线全部落盘
 - **隐私优先**：涉个人信息默认打码，原始文件单独存放并限制分发
+- **防误伤**：默认拒绝解析到内网 / 回环 / 保留地址的目标（含 30x 跳转），
+  避免被来源不明的案件文件诱导探测内网；隔离实验环境可用 `--allow-private` 显式放行
+- **防越界**：`case_id` 仅允许字母、数字、点、下划线和短横线，证据校验只读取案件目录内的文件
 
 ## 适用与不适用
 

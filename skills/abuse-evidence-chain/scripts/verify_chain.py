@@ -34,12 +34,21 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def safe_artifact_path(case_dir: Path, rel: str):
+    """只允许校验案件目录内的文件，防止被篡改的 manifest 读取任意路径。"""
+    root = case_dir.resolve()
+    candidate = (root / rel).resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate
+
+
 def verify(case_dir: Path):
     manifest_path = case_dir / "manifest.json"
     if not manifest_path.is_file():
         raise ValueError(f"未找到 manifest.json: {case_dir}")
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"manifest.json 解析失败: {exc}")
 
@@ -48,14 +57,16 @@ def verify(case_dir: Path):
     for item in manifest.get("artifacts") or []:
         rel = item.get("path", "")
         listed.add(rel)
-        path = case_dir / rel
+        path = safe_artifact_path(case_dir, rel)
         entry = {
             "path": rel,
             "expected": item.get("sha256", ""),
             "actual": "",
             "status": "MISSING",
         }
-        if path.is_file():
+        if path is None:
+            entry["status"] = "INVALID_PATH"
+        elif path.is_file():
             entry["actual"] = sha256_file(path)
             entry["status"] = "OK" if entry["actual"] == entry["expected"] else "MISMATCH"
         checked.append(entry)

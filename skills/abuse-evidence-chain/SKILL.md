@@ -37,6 +37,8 @@ description: Build a verifiable evidence pack and abuse reports for fraudulent o
 
 禁止：登录后台、目录爆破、漏洞验证、口令猜测、批量爬取、任何写操作、任何拒绝服务行为。
 
+默认拒绝解析到内网 / 回环 / 保留地址的目标（包括 30x 跳转后的地址）；仅在隔离实验环境中才可加 `--allow-private` 显式放行。
+
 ## 输出契约
 
 - `manifest.json`：案件信息、采集时间线、每个文件的路径、大小、SHA-256

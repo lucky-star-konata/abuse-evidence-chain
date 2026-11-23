@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import re
 import shutil
@@ -31,6 +32,7 @@ VERSION_FILE = ROOT / "VERSION"
 DEFAULT_OUT = ROOT / "cases"
 TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 HOST_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def get_version() -> str:
@@ -56,6 +58,54 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_case_id(value) -> str:
+    """case_id 会作为目录名，必须限制字符集，防止路径穿越。"""
+    case_id = str(value).strip()
+    if not CASE_ID_RE.match(case_id):
+        raise ValueError(
+            "case_id 只能由字母、数字、点、下划线和短横线组成，"
+            "且必须以字母或数字开头，长度不超过 64"
+        )
+    return case_id
+
+
+def ensure_public_target(url: str, allow_private: bool) -> None:
+    """默认拒绝解析到内网 / 回环 / 保留地址的目标，避免被案件文件诱导内网探测。"""
+    if allow_private:
+        return
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"URL 缺少主机名: {url}")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"无法解析目标主机 {host}: {exc}")
+    for info in infos:
+        address = info[4][0].split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if not ip.is_global:
+            raise ValueError(
+                f"目标 {host} 解析到非公网地址 {address}，已拒绝采集"
+                "（确需内网取证时显式加 --allow-private）"
+            )
+
+
+class _PublicOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """跳转目标同样执行公网校验，防止 302 到内网地址。"""
+
+    def __init__(self, allow_private: bool):
+        self.allow_private = allow_private
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        ensure_public_target(newurl, self.allow_private)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def load_case(path: Path):
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -67,6 +117,7 @@ def load_case(path: Path):
         raise ValueError("案件根节点必须是对象")
     if not data.get("case_id"):
         raise ValueError("缺少 case_id")
+    data["case_id"] = validate_case_id(data["case_id"])
     if not data.get("title"):
         raise ValueError("缺少 title")
     targets = data.get("targets")
@@ -94,10 +145,10 @@ def resolve_dns(host: str):
         return []
 
 
-def get_certificate(host: str, timeout: int):
+def get_certificate(host: str, port: int, timeout: int):
     context = ssl.create_default_context()
     try:
-        with socket.create_connection((host, 443), timeout=timeout) as sock:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
             with context.wrap_socket(sock, server_hostname=host) as tls:
                 cert = tls.getpeercert()
     except Exception as exc:  # noqa: BLE001 - 证书获取失败属于可记录结果
@@ -133,7 +184,8 @@ def get_whois(host: str, out_dir: Path, timeout: int):
     return {"available": False, "reason": "whois 无返回"}
 
 
-def fetch_target(url: str, target_dir: Path, timeout: int, max_bytes: int, ua: str):
+def fetch_target(url: str, target_dir: Path, timeout: int, max_bytes: int, ua: str,
+                 allow_private: bool = False):
     target_dir.mkdir(parents=True, exist_ok=True)
     meta = {
         "url": url,
@@ -151,13 +203,15 @@ def fetch_target(url: str, target_dir: Path, timeout: int, max_bytes: int, ua: s
         "User-Agent": ua,
         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
     })
+    opener = urllib.request.build_opener(_PublicOnlyRedirectHandler(allow_private))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        ensure_public_target(url, allow_private)
+        with opener.open(request, timeout=timeout) as response:
             status = getattr(response, "status", None) or response.getcode()
             final_url = response.geturl()
             headers = list(response.headers.items())
             raw = response.read(max_bytes + 1)
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
         meta["error"] = str(exc)
         (target_dir / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -196,8 +250,9 @@ def fetch_target(url: str, target_dir: Path, timeout: int, max_bytes: int, ua: s
         "files": ["page.html", "headers.txt"],
     })
 
-    if urlparse(final_url or url).scheme == "https" and host:
-        cert = get_certificate(host, timeout)
+    final_parsed = urlparse(final_url or url)
+    if final_parsed.scheme == "https" and host:
+        cert = get_certificate(host, final_parsed.port or 443, timeout)
         meta["cert"] = cert
         (target_dir / "cert.json").write_text(
             json.dumps(cert, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -241,6 +296,11 @@ def main(argv=None) -> int:
         help="请求 User-Agent",
     )
     parser.add_argument("--confirm-legal", action="store_true", help="确认本次采集合法且仅访问公开页面")
+    parser.add_argument(
+        "--allow-private", action="store_true",
+        help="允许采集解析到内网 / 回环地址的目标（默认拒绝，仅限隔离实验环境）",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="只打印采集计划，不发起任何请求")
     parser.add_argument("--version", action="version", version=f"%(prog)s {get_version()}")
     args = parser.parse_args(argv)
 
@@ -254,7 +314,21 @@ def main(argv=None) -> int:
         print(f"[!] {exc}", file=sys.stderr)
         return 2
 
-    case_dir = Path(args.out_dir) / case["case_id"]
+    out_root = Path(args.out_dir).resolve()
+    case_dir = (out_root / case["case_id"]).resolve()
+    if case_dir.parent != out_root:
+        print(f"[!] case_id 解析后的目录越界: {case_dir}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print("[DRY-RUN] 以下目标将被采集（不会发起任何请求）：")
+        for index, target in enumerate(case["targets"], 1):
+            label = target.get("label") or f"target-{index}"
+            host = host_label(target["url"])
+            target_dir = case_dir / f"{index:02d}-{host}-{HOST_RE.sub('_', str(label))[:30]}"
+            print(f"  - {target['url']} -> {target_dir}")
+        return 0
+
     case_dir.mkdir(parents=True, exist_ok=True)
 
     targets_meta = []
@@ -264,7 +338,10 @@ def main(argv=None) -> int:
         host = host_label(target["url"])
         target_dir = case_dir / f"{index:02d}-{host}-{HOST_RE.sub('_', str(label))[:30]}"
         print(f"[COLLECT] {target['url']}")
-        meta = fetch_target(target["url"], target_dir, args.timeout, args.max_bytes, args.user_agent)
+        meta = fetch_target(
+            target["url"], target_dir, args.timeout, args.max_bytes,
+            args.user_agent, args.allow_private,
+        )
         meta["label"] = label
         meta["dir"] = target_dir.relative_to(case_dir).as_posix()
         targets_meta.append(meta)

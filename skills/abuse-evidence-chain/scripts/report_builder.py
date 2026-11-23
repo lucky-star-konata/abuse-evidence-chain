@@ -40,7 +40,7 @@ def load_manifest(case_dir: Path):
     if not path.is_file():
         raise ValueError(f"未找到 manifest.json: {case_dir}")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"manifest.json 解析失败: {exc}")
 

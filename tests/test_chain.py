@@ -67,10 +67,45 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("confirm-legal", result.stderr)
 
+    def test_rejects_case_id_traversal(self):
+        data = json.loads(self.case_file.read_text(encoding="utf-8"))
+        data["case_id"] = "../../escape"
+        self.case_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        result = self.run_cli(
+            "evidence_collect.py", "--case", str(self.case_file),
+            "--out-dir", str(self.base / "cases"), "--confirm-legal",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("case_id", result.stderr)
+        self.assertFalse((self.base / "escape").exists())
+
+    def test_private_target_blocked_by_default(self):
+        result = self.run_cli(
+            "evidence_collect.py", "--case", str(self.case_file),
+            "--out-dir", str(self.base / "cases"), "--confirm-legal",
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("非公网地址", result.stderr)
+        self.assertFalse(any(self.case_dir.glob("*/page.html")))
+        manifest = json.loads(
+            (self.case_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["targets"][0]["status"], "failed")
+        self.assertIn("非公网地址", manifest["targets"][0]["error"])
+
+    def test_dry_run_makes_no_request(self):
+        result = self.run_cli(
+            "evidence_collect.py", "--case", str(self.case_file),
+            "--out-dir", str(self.base / "cases"), "--confirm-legal", "--dry-run",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[DRY-RUN]", result.stdout)
+        self.assertFalse(self.case_dir.exists())
+
     def test_full_chain(self):
         collect = self.run_cli(
             "evidence_collect.py", "--case", str(self.case_file),
-            "--out-dir", str(self.base / "cases"), "--confirm-legal",
+            "--out-dir", str(self.base / "cases"), "--confirm-legal", "--allow-private",
         )
         self.assertEqual(collect.returncode, 0, collect.stderr)
         self.assertTrue((self.case_dir / "manifest.json").is_file())
